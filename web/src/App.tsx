@@ -313,7 +313,7 @@ function AppInner() {
     }
 
     return (
-        <AppContextProvider value={{ api, token }}>
+        <AppContextProvider value={{ api, token, baseUrl }}>
             <SyncingBanner isSyncing={isSyncing} />
             <OfflineBanner />
             <div className="h-full flex flex-col">
