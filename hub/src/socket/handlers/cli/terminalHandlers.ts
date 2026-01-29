@@ -7,12 +7,7 @@ import {
 import type { StoredSession } from '../../../store'
 import type { TerminalRegistry } from '../../terminalRegistry'
 import type { CliSocketWithData, SocketServer } from '../../socketTypes'
-
-type AccessErrorReason = 'namespace-missing' | 'access-denied' | 'not-found'
-
-type AccessResult<T> =
-    | { ok: true; value: T }
-    | { ok: false; reason: AccessErrorReason }
+import type { AccessErrorReason, AccessResult } from './types'
 
 type ResolveSessionAccess = (sessionId: string) => AccessResult<StoredSession>
 

@@ -4,17 +4,12 @@ import { randomUUID } from 'node:crypto'
 import type { Store, StoredMachine } from '../../../store'
 import type { SyncEvent } from '../../../sync/syncEngine'
 import type { CliSocketWithData } from '../../socketTypes'
+import type { AccessErrorReason, AccessResult } from './types'
 
 type MachineAlivePayload = {
     machineId: string
     time: number
 }
-
-type AccessErrorReason = 'namespace-missing' | 'access-denied' | 'not-found'
-
-type AccessResult<T> =
-    | { ok: true; value: T }
-    | { ok: false; reason: AccessErrorReason }
 
 type ResolveMachineAccess = (machineId: string) => AccessResult<StoredMachine>
 

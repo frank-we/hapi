@@ -6,6 +6,7 @@ import type { Store, StoredSession } from '../../../store'
 import type { SyncEvent } from '../../../sync/syncEngine'
 import { extractTodoWriteTodosFromMessageContent } from '../../../sync/todos'
 import type { CliSocketWithData } from '../../socketTypes'
+import type { AccessErrorReason, AccessResult } from './types'
 
 type SessionAlivePayload = {
     sid: string
@@ -20,12 +21,6 @@ type SessionEndPayload = {
     sid: string
     time: number
 }
-
-type AccessErrorReason = 'namespace-missing' | 'access-denied' | 'not-found'
-
-type AccessResult<T> =
-    | { ok: true; value: T }
-    | { ok: false; reason: AccessErrorReason }
 
 type ResolveSessionAccess = (sessionId: string) => AccessResult<StoredSession>
 
