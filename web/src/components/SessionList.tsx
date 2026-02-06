@@ -1,13 +1,59 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useReducer, useRef, useState } from 'react'
 import type { SessionSummary } from '@/types/api'
 import type { ApiClient } from '@/api/client'
 import { useLongPress } from '@/hooks/useLongPress'
 import { usePlatform } from '@/hooks/usePlatform'
-import { useSessionActions } from '@/hooks/mutations/useSessionActions'
+import { useBulkSessionActions, useSessionActions } from '@/hooks/mutations/useSessionActions'
 import { SessionActionMenu } from '@/components/SessionActionMenu'
 import { RenameSessionDialog } from '@/components/RenameSessionDialog'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { useTranslation } from '@/lib/use-translation'
+import { useToast } from '@/lib/toast-context'
+
+
+// Selection state management
+type SelectionState = {
+    selectionMode: boolean
+    selectedIds: Set<string>
+}
+
+type SelectionAction =
+    | { type: 'ENTER_SELECTION_MODE' }
+    | { type: 'EXIT_SELECTION_MODE' }
+    | { type: 'TOGGLE_SESSION'; sessionId: string }
+    | { type: 'SELECT_ALL'; sessionIds: string[] }
+    | { type: 'SET_SELECTION'; sessionIds: string[] }
+    | { type: 'CLEAR_SELECTION' }
+
+function selectionReducer(state: SelectionState, action: SelectionAction): SelectionState {
+    switch (action.type) {
+        case 'ENTER_SELECTION_MODE':
+            return { ...state, selectionMode: true }
+        case 'EXIT_SELECTION_MODE':
+            return { selectionMode: false, selectedIds: new Set() }
+        case 'TOGGLE_SESSION': {
+            const newSelectedIds = new Set(state.selectedIds)
+            if (newSelectedIds.has(action.sessionId)) {
+                newSelectedIds.delete(action.sessionId)
+            } else {
+                newSelectedIds.add(action.sessionId)
+            }
+            return { ...state, selectedIds: newSelectedIds }
+        }
+        case 'SELECT_ALL': {
+            const newSelectedIds = new Set(action.sessionIds)
+            return { ...state, selectedIds: newSelectedIds }
+        }
+        case 'SET_SELECTION': {
+            const newSelectedIds = new Set(action.sessionIds)
+            return { ...state, selectedIds: newSelectedIds }
+        }
+        case 'CLEAR_SELECTION':
+            return { ...state, selectedIds: new Set() }
+        default:
+            return state
+    }
+}
 
 type SessionGroup = {
     directory: string
@@ -102,6 +148,46 @@ function BulbIcon(props: { className?: string }) {
     )
 }
 
+function SelectionIcon(props: { className?: string }) {
+    return (
+        <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="24"
+            height="24"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className={props.className}
+        >
+            <path d="M9 11l3 3L22 4" />
+            <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" />
+        </svg>
+    )
+}
+
+function XIcon(props: { className?: string }) {
+    return (
+        <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="24"
+            height="24"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className={props.className}
+        >
+            <line x1="18" y1="6" x2="6" y2="18" />
+            <line x1="6" y1="6" x2="18" y2="18" />
+        </svg>
+    )
+}
+
 function ChevronIcon(props: { className?: string; collapsed?: boolean }) {
     return (
         <svg
@@ -167,9 +253,14 @@ function SessionItem(props: {
     showPath?: boolean
     api: ApiClient | null
     selected?: boolean
+    selectionMode?: boolean
+    isSelected?: boolean
+    onToggleSelect?: (sessionId: string) => void
+    bulkDeleteEnabled?: boolean
+    onBulkDeleteRequested?: () => void
 }) {
     const { t } = useTranslation()
-    const { session: s, onSelect, showPath = true, api, selected = false } = props
+    const { session: s, onSelect, showPath = true, api, selected = false, selectionMode = false, isSelected = false, onToggleSelect, bulkDeleteEnabled = false, onBulkDeleteRequested } = props
     const { haptic } = usePlatform()
     const [menuOpen, setMenuOpen] = useState(false)
     const [menuAnchorPoint, setMenuAnchorPoint] = useState<{ x: number; y: number }>({ x: 0, y: 0 })
@@ -190,8 +281,10 @@ function SessionItem(props: {
             setMenuOpen(true)
         },
         onClick: () => {
-            if (!menuOpen) {
+            if (!menuOpen && !selectionMode) {
                 onSelect(s.id)
+            } else if (selectionMode && onToggleSelect && !s.active) {
+                onToggleSelect(s.id)
             }
         },
         threshold: 500
@@ -206,17 +299,44 @@ function SessionItem(props: {
             <button
                 type="button"
                 {...longPressHandlers}
+                onKeyDown={(e) => {
+                    if (!selectionMode) return
+                    if (e.key === ' ' || e.key === 'Spacebar') {
+                        e.preventDefault()
+                        if (onToggleSelect && !s.active) {
+                            onToggleSelect(s.id)
+                        }
+                    }
+                }}
                 className={`session-list-item flex w-full flex-col gap-1.5 px-3 py-3 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)] select-none ${selected ? 'bg-[var(--app-secondary-bg)]' : ''}`}
                 style={{ WebkitTouchCallout: 'none' }}
                 aria-current={selected ? 'page' : undefined}
+                aria-keyshortcuts={selectionMode ? 'Space' : undefined}
             >
                 <div className="flex items-center justify-between gap-3">
                     <div className="flex items-center gap-2 min-w-0">
-                        <span className="flex h-4 w-4 items-center justify-center" aria-hidden="true">
-                            <span
-                                className={`h-2 w-2 rounded-full ${statusDotClass}`}
-                            />
-                        </span>
+                        {selectionMode ? (
+                            <label
+                                className="flex h-4 w-4 items-center justify-center cursor-pointer"
+                                title={s.active ? t('session.selection.activeDisabled') : undefined}
+                            >
+                                <input
+                                    type="checkbox"
+                                    checked={isSelected}
+                                    disabled={s.active}
+                                    onChange={() => onToggleSelect?.(s.id)}
+                                    onClick={(e) => e.stopPropagation()}
+                                    className="h-4 w-4 rounded border-[var(--app-divider)] text-[var(--app-link)] focus:ring-2 focus:ring-[var(--app-link)] disabled:opacity-50 disabled:cursor-not-allowed"
+                                    aria-label={s.active ? t('session.selection.activeDisabledAria', { name: sessionName }) : t('session.selection.toggleAria', { name: sessionName })}
+                                />
+                            </label>
+                        ) : (
+                            <span className="flex h-4 w-4 items-center justify-center" aria-hidden="true">
+                                <span
+                                    className={`h-2 w-2 rounded-full ${statusDotClass}`}
+                                />
+                            </span>
+                        )}
                         <div className="truncate text-base font-medium">
                             {sessionName}
                         </div>
@@ -272,7 +392,14 @@ function SessionItem(props: {
                 sessionActive={s.active}
                 onRename={() => setRenameOpen(true)}
                 onArchive={() => setArchiveOpen(true)}
-                onDelete={() => setDeleteOpen(true)}
+                onDelete={() => {
+                    setMenuOpen(false)
+                    if (bulkDeleteEnabled) {
+                        onBulkDeleteRequested?.()
+                        return
+                    }
+                    setDeleteOpen(true)
+                }}
                 anchorPoint={menuAnchorPoint}
             />
 
@@ -320,9 +447,198 @@ export function SessionList(props: {
     renderHeader?: boolean
     api: ApiClient | null
     selectedSessionId?: string | null
+    selectionApiRef?: {
+        current: {
+            enterSelectionMode: () => void
+            exitSelectionMode: () => void
+        } | null
+    }
+    onSelectionStateChange?: (state: {
+        selectionMode: boolean
+        selectedCount: number
+        hasSelection: boolean
+    }) => void
 }) {
-    const { t } = useTranslation()
+    const { t, locale } = useTranslation()
+    const { addToast } = useToast()
     const { renderHeader = true, api, selectedSessionId } = props
+
+    // Selection state management
+    const [selectionState, dispatchSelection] = useReducer(selectionReducer, {
+        selectionMode: false,
+        selectedIds: new Set<string>()
+    })
+
+    const [bulkDeleteDialogOpen, setBulkDeleteDialogOpen] = useState(false)
+    const { deleteSessions, isPending: isBulkDeleting } = useBulkSessionActions(api)
+    const selectionToggleButtonRef = useRef<HTMLButtonElement>(null)
+    const newSessionButtonRef = useRef<HTMLButtonElement>(null)
+    const previousFocusRef = useRef<HTMLElement | null>(null)
+
+    const selectableSessionIds = useMemo(
+        () => props.sessions.filter(s => !s.active).map(s => s.id),
+        [props.sessions]
+    )
+    const selectedCount = useMemo(
+        () => selectionState.selectedIds.size,
+        [selectionState.selectedIds]
+    )
+    const selectableCount = useMemo(
+        () => selectableSessionIds.length,
+        [selectableSessionIds]
+    )
+    const isAllSelected = useMemo(
+        () => selectableCount > 0 && selectedCount === selectableCount,
+        [selectableCount, selectedCount]
+    )
+    const isIndeterminate = useMemo(
+        () => selectedCount > 0 && selectedCount < selectableCount,
+        [selectableCount, selectedCount]
+    )
+
+    const hasSelection = useMemo(
+        () => selectionState.selectionMode && selectionState.selectedIds.size > 0,
+        [selectionState.selectionMode, selectionState.selectedIds]
+    )
+
+    const getCountKey = (n: number) => (
+        n === 1 ? 'session.selection.selectedCount_one' : 'session.selection.selectedCount_other'
+    )
+
+    const getPluralKey = (keyBase: string, n: number) => {
+        if (locale !== 'en') return keyBase
+        return `${keyBase}_${n === 1 ? 'one' : 'other'}`
+    }
+
+    const handleEnterSelectionMode = () => dispatchSelection({ type: 'ENTER_SELECTION_MODE' })
+    const handleExitSelectionMode = () => {
+        setBulkDeleteDialogOpen(false)
+        dispatchSelection({ type: 'EXIT_SELECTION_MODE' })
+    }
+
+    if (props.selectionApiRef) {
+        props.selectionApiRef.current = {
+            enterSelectionMode: handleEnterSelectionMode,
+            exitSelectionMode: handleExitSelectionMode,
+        }
+    }
+
+    useEffect(() => {
+        props.onSelectionStateChange?.({
+            selectionMode: selectionState.selectionMode,
+            selectedCount,
+            hasSelection,
+        })
+    }, [hasSelection, props.onSelectionStateChange, selectedCount, selectionState.selectionMode])
+
+    const handleBulkDelete = () => {
+        setBulkDeleteDialogOpen(true)
+    }
+
+    const handleConfirmBulkDelete = async () => {
+        const selectedIds = Array.from(selectionState.selectedIds)
+        const { succeeded, failed } = await deleteSessions(selectedIds)
+
+        if (failed.length === 0) {
+            dispatchSelection({ type: 'EXIT_SELECTION_MODE' })
+            addToast({
+                title: t('session.bulkDelete.toastSuccessTitle'),
+                body: t(getPluralKey('session.bulkDelete.toastSuccessBody', succeeded.length), { n: succeeded.length }),
+                sessionId: '',
+                url: ''
+            })
+        } else if (succeeded.length === 0) {
+            addToast({
+                title: t('session.bulkDelete.toastAllFailedTitle'),
+                body: t(getPluralKey('session.bulkDelete.toastAllFailedBody', failed.length), { n: failed.length }),
+                sessionId: '',
+                url: ''
+            })
+        } else {
+            dispatchSelection({ type: 'CLEAR_SELECTION' })
+            dispatchSelection({ type: 'SELECT_ALL', sessionIds: failed.map(f => f.id) })
+            addToast({
+                title: t('session.bulkDelete.toastPartialFailedTitle'),
+                body: t(getPluralKey('session.bulkDelete.toastPartialFailedBody', failed.length), { n: failed.length }),
+                sessionId: '',
+                url: ''
+            })
+        }
+
+        setBulkDeleteDialogOpen(false)
+    }
+
+    const handleSelectAll = () => {
+        if (isAllSelected) {
+            dispatchSelection({ type: 'CLEAR_SELECTION' })
+            return
+        }
+        dispatchSelection({ type: 'SELECT_ALL', sessionIds: selectableSessionIds })
+    }
+
+    const selectAllCheckboxRef = useRef<HTMLInputElement>(null)
+    useEffect(() => {
+        if (!selectAllCheckboxRef.current) return
+        selectAllCheckboxRef.current.indeterminate = isIndeterminate
+    }, [isIndeterminate])
+
+    // Clear invalid selections when sessions list updates (e.g. deleted/archived)
+    useEffect(() => {
+        if (selectionState.selectedIds.size === 0) return
+        const selectableIdSet = new Set(selectableSessionIds)
+        const validSelectedIds = Array.from(selectionState.selectedIds).filter(id => selectableIdSet.has(id))
+        if (validSelectedIds.length === selectionState.selectedIds.size) return
+
+        dispatchSelection({ type: 'CLEAR_SELECTION' })
+        if (validSelectedIds.length > 0) {
+            dispatchSelection({ type: 'SELECT_ALL', sessionIds: validSelectedIds })
+        }
+    }, [selectableSessionIds, selectionState.selectedIds])
+
+    // Keyboard: Escape exits selection mode
+    useEffect(() => {
+        if (!selectionState.selectionMode) return
+
+        const onKeyDown = (event: KeyboardEvent) => {
+            if (event.key !== 'Escape') return
+            if (isBulkDeleting) return
+            event.preventDefault()
+            handleExitSelectionMode()
+        }
+
+        window.addEventListener('keydown', onKeyDown)
+        return () => window.removeEventListener('keydown', onKeyDown)
+    }, [handleExitSelectionMode, isBulkDeleting, selectionState.selectionMode])
+
+    // Focus management when entering/exiting selection mode
+    useEffect(() => {
+        if (selectionState.selectionMode) {
+            const active = document.activeElement
+            if (active instanceof HTMLElement) {
+                previousFocusRef.current = active
+            }
+            requestAnimationFrame(() => {
+                selectAllCheckboxRef.current?.focus()
+            })
+            return
+        }
+
+        const previous = previousFocusRef.current
+        previousFocusRef.current = null
+
+        requestAnimationFrame(() => {
+            if (previous && document.contains(previous)) {
+                previous.focus()
+                return
+            }
+            if (selectionToggleButtonRef.current) {
+                selectionToggleButtonRef.current.focus()
+                return
+            }
+            newSessionButtonRef.current?.focus()
+        })
+    }, [selectionState.selectionMode])
+
     const groups = useMemo(
         () => groupSessionsByDirectory(props.sessions),
         [props.sessions]
@@ -360,47 +676,174 @@ export function SessionList(props: {
         })
     }, [groups])
 
+    const bulkDeleteTitle = useMemo(() => {
+        if (locale === 'en') {
+            const key = selectedCount === 1 ? 'session.bulkDelete.title_one' : 'session.bulkDelete.title_other'
+            return t(key, { n: selectedCount })
+        }
+        return t('session.bulkDelete.title', { n: selectedCount })
+    }, [locale, selectedCount, t])
+
+    const bulkDeleteDescription = useMemo(() => {
+        const selectedSessions = props.sessions.filter(s => selectionState.selectedIds.has(s.id))
+        const names = selectedSessions.slice(0, 3).map(getSessionTitle).join(', ')
+        const hasMore = selectedSessions.length > 3
+
+        const base = (() => {
+            if (locale === 'en') {
+                const key = selectedCount === 1
+                    ? 'session.bulkDelete.description_one'
+                    : 'session.bulkDelete.description_other'
+                return t(key, { n: selectedCount })
+            }
+            return t('session.bulkDelete.description', { n: selectedCount })
+        })()
+
+        if (!names) return base
+        return `${base} (${names}${hasMore ? '…' : ''})`
+    }, [locale, props.sessions, selectedCount, selectionState.selectedIds, t])
+
     return (
         <div className="mx-auto w-full max-w-content flex flex-col">
             {renderHeader ? (
                 <div className="flex items-center justify-between px-3 py-1">
-                    <div className="text-xs text-[var(--app-hint)]">
-                        {t('sessions.count', { n: props.sessions.length, m: groups.length })}
-                    </div>
-                    <button
-                        type="button"
-                        onClick={props.onNewSession}
-                        className="session-list-new-button p-1.5 rounded-full text-[var(--app-link)] transition-colors"
-                        title={t('sessions.new')}
-                    >
-                        <PlusIcon className="h-5 w-5" />
-                    </button>
+                    {selectionState.selectionMode ? (
+                        <div className="flex items-center gap-3" aria-keyshortcuts="Escape">
+                            <span className="sr-only">{t('session.selection.keyboardHint')}</span>
+                            <label className="flex items-center gap-2 text-xs text-[var(--app-hint)]">
+                                <input
+                                    ref={selectAllCheckboxRef}
+                                    type="checkbox"
+                                    checked={isAllSelected}
+                                    onChange={handleSelectAll}
+                                    disabled={selectableCount === 0}
+                                    aria-label={isAllSelected ? t('session.selection.deselectAllAria') : t('session.selection.selectAllAria')}
+                                    className="h-4 w-4 rounded border-[var(--app-divider)] text-[var(--app-link)] focus:ring-2 focus:ring-[var(--app-link)] disabled:opacity-50 disabled:cursor-not-allowed"
+                                />
+                                <span>
+                                    {isAllSelected ? t('session.selection.deselectAll') : t('session.selection.selectAll')}
+                                </span>
+                            </label>
+                            <div className="text-xs text-[var(--app-hint)]">
+                                {locale === 'en'
+                                    ? t(getCountKey(selectedCount), { n: selectedCount })
+                                    : t('session.selection.selectedCount', { n: selectedCount })}
+                            </div>
+                            {selectedCount > 0 ? (
+                                <button
+                                    type="button"
+                                    onClick={() => dispatchSelection({ type: 'CLEAR_SELECTION' })}
+                                    className="text-xs text-[var(--app-link)] hover:underline"
+                                    aria-label={t('session.selection.deselectAllAria')}
+                                >
+                                    {t('session.selection.deselectAll')}
+                                </button>
+                            ) : null}
+                        </div>
+                    ) : (
+                        <>
+                            <div className="text-xs text-[var(--app-hint)]">
+                                {t('sessions.count', { n: props.sessions.length, m: groups.length })}
+                            </div>
+                            <div className="flex items-center gap-1.5">
+                                <button
+                                    type="button"
+                                    onClick={handleEnterSelectionMode}
+                                    className="p-1.5 rounded-full text-[var(--app-link)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)]"
+                                    title={t('session.selection.enterMode')}
+                                    aria-label={t('session.selection.enterModeAria')}
+                                    ref={selectionToggleButtonRef}
+                                >
+                                    <SelectionIcon className="h-5 w-5" />
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={props.onNewSession}
+                                    className="session-list-new-button p-1.5 rounded-full text-[var(--app-link)] transition-colors"
+                                    title={t('sessions.new')}
+                                    ref={newSessionButtonRef}
+                                >
+                                    <PlusIcon className="h-5 w-5" />
+                                </button>
+                            </div>
+                        </>
+                    )}
+                    {selectionState.selectionMode ? (
+                        <button
+                            type="button"
+                            onClick={handleExitSelectionMode}
+                            disabled={isBulkDeleting}
+                            className="p-1.5 rounded-full text-[var(--app-link)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)] disabled:opacity-60 disabled:cursor-not-allowed"
+                            title={t('session.selection.exitMode')}
+                            aria-label={t('session.selection.exitModeAria')}
+                        >
+                            <XIcon className="h-5 w-5" />
+                        </button>
+                    ) : null}
                 </div>
             ) : null}
 
             <div className="flex flex-col">
                 {groups.map((group) => {
                     const isCollapsed = isGroupCollapsed(group)
+                    const groupSelectableSessionIds = selectionState.selectionMode
+                        ? group.sessions.filter(s => !s.active).map(s => s.id)
+                        : []
+                    const groupSelectedCount = selectionState.selectionMode
+                        ? groupSelectableSessionIds.filter(id => selectionState.selectedIds.has(id)).length
+                        : 0
+                    const groupSelectableCount = groupSelectableSessionIds.length
+                    const groupAllSelected = groupSelectableCount > 0 && groupSelectedCount === groupSelectableCount
+                    const groupIndeterminate = groupSelectedCount > 0 && groupSelectedCount < groupSelectableCount
                     return (
                         <div key={group.directory}>
-                            <button
-                                type="button"
-                                onClick={() => toggleGroup(group.directory, isCollapsed)}
-                                className="sticky top-0 z-10 flex w-full items-center gap-2 px-3 py-2 text-left bg-[var(--app-bg)] border-b border-[var(--app-divider)] transition-colors hover:bg-[var(--app-secondary-bg)]"
-                            >
-                                <ChevronIcon
-                                    className="h-4 w-4 text-[var(--app-hint)]"
-                                    collapsed={isCollapsed}
-                                />
-                                <div className="flex items-center gap-2 min-w-0 flex-1">
-                                    <span className="font-medium text-base break-words" title={group.directory}>
-                                        {group.displayName}
-                                    </span>
-                                    <span className="shrink-0 text-xs text-[var(--app-hint)]">
-                                        ({group.sessions.length})
-                                    </span>
-                                </div>
-                            </button>
+                            <div className="sticky top-0 z-10 flex w-full items-center gap-2 px-3 py-2 bg-[var(--app-bg)] border-b border-[var(--app-divider)] transition-colors hover:bg-[var(--app-secondary-bg)]">
+                                {selectionState.selectionMode ? (
+                                    <label className="flex items-center justify-center">
+                                        <input
+                                            type="checkbox"
+                                            checked={groupAllSelected}
+                                            disabled={groupSelectableCount === 0}
+                                            ref={(el) => {
+                                                if (!el) return
+                                                el.indeterminate = groupIndeterminate
+                                            }}
+                                            onClick={(e) => e.stopPropagation()}
+                                            onChange={() => {
+                                                const nextSelectedIds = new Set(selectionState.selectedIds)
+                                                if (groupAllSelected) {
+                                                    groupSelectableSessionIds.forEach(id => nextSelectedIds.delete(id))
+                                                } else {
+                                                    groupSelectableSessionIds.forEach(id => nextSelectedIds.add(id))
+                                                }
+                                                dispatchSelection({ type: 'SET_SELECTION', sessionIds: Array.from(nextSelectedIds) })
+                                            }}
+                                            aria-label={groupAllSelected
+                                                ? t('session.selection.deselectGroupAria', { group: group.displayName })
+                                                : t('session.selection.selectGroupAria', { group: group.displayName })}
+                                            className="h-4 w-4 rounded border-[var(--app-divider)] text-[var(--app-link)] focus:ring-2 focus:ring-[var(--app-link)] disabled:opacity-50 disabled:cursor-not-allowed"
+                                        />
+                                    </label>
+                                ) : null}
+                                <button
+                                    type="button"
+                                    onClick={() => toggleGroup(group.directory, isCollapsed)}
+                                    className="flex w-full items-center gap-2 text-left"
+                                >
+                                    <ChevronIcon
+                                        className="h-4 w-4 text-[var(--app-hint)]"
+                                        collapsed={isCollapsed}
+                                    />
+                                    <div className="flex items-center gap-2 min-w-0 flex-1">
+                                        <span className="font-medium text-base break-words" title={group.directory}>
+                                            {group.displayName}
+                                        </span>
+                                        <span className="shrink-0 text-xs text-[var(--app-hint)]">
+                                            ({group.sessions.length})
+                                        </span>
+                                    </div>
+                                </button>
+                            </div>
                             {!isCollapsed ? (
                                 <div className="flex flex-col divide-y divide-[var(--app-divider)] border-b border-[var(--app-divider)]">
                                     {group.sessions.map((s) => (
@@ -411,6 +854,11 @@ export function SessionList(props: {
                                             showPath={false}
                                             api={api}
                                             selected={s.id === selectedSessionId}
+                                            selectionMode={selectionState.selectionMode}
+                                            isSelected={selectionState.selectedIds.has(s.id)}
+                                            onToggleSelect={(sessionId) => dispatchSelection({ type: 'TOGGLE_SESSION', sessionId })}
+                                            bulkDeleteEnabled={selectionState.selectionMode && selectionState.selectedIds.size > 0}
+                                            onBulkDeleteRequested={handleBulkDelete}
                                         />
                                     ))}
                                 </div>
@@ -419,6 +867,21 @@ export function SessionList(props: {
                     )
                 })}
             </div>
+
+            <ConfirmDialog
+                isOpen={bulkDeleteDialogOpen}
+                onClose={() => {
+                    if (isBulkDeleting) return
+                    setBulkDeleteDialogOpen(false)
+                }}
+                title={bulkDeleteTitle}
+                description={bulkDeleteDescription}
+                confirmLabel={t('session.bulkDelete.confirm')}
+                confirmingLabel={t('session.bulkDelete.confirming')}
+                onConfirm={handleConfirmBulkDelete}
+                isPending={isBulkDeleting}
+                destructive
+            />
         </div>
     )
 }

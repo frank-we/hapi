@@ -123,3 +123,50 @@ export function useSessionActions(
             || deleteMutation.isPending,
     }
 }
+
+export function useBulkSessionActions(api: ApiClient | null) {
+    const queryClient = useQueryClient()
+
+    const bulkDeleteMutation = useMutation({
+        mutationFn: async (sessionIds: string[]) => {
+            if (!api) throw new Error('API unavailable')
+
+            const succeeded: string[] = []
+            const failed: Array<{ id: string; error: string }> = []
+
+            const limit = 5
+            for (let i = 0; i < sessionIds.length; i += limit) {
+                const batch = sessionIds.slice(i, i + limit)
+                const results = await Promise.allSettled(
+                    batch.map(id => api.deleteSession(id))
+                )
+
+                results.forEach((result, index) => {
+                    const id = batch[index]
+                    if (result.status === 'fulfilled') {
+                        succeeded.push(id)
+                    } else {
+                        failed.push({
+                            id,
+                            error: (result.reason as { message?: string } | undefined)?.message || String(result.reason)
+                        })
+                    }
+                })
+            }
+
+            return { succeeded, failed }
+        },
+        onSuccess: async ({ succeeded }) => {
+            succeeded.forEach(id => {
+                queryClient.removeQueries({ queryKey: queryKeys.session(id) })
+                clearMessageWindow(id)
+            })
+            await queryClient.invalidateQueries({ queryKey: queryKeys.sessions })
+        }
+    })
+
+    return {
+        deleteSessions: bulkDeleteMutation.mutateAsync,
+        isPending: bulkDeleteMutation.isPending
+    }
+}

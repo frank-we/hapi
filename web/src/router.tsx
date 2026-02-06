@@ -1,4 +1,4 @@
-import { useCallback } from 'react'
+import { useCallback, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import {
     Navigate,
@@ -34,6 +34,17 @@ import FilesPage from '@/routes/sessions/files'
 import FilePage from '@/routes/sessions/file'
 import TerminalPage from '@/routes/sessions/terminal'
 import SettingsPage from '@/routes/settings'
+
+type SessionListSelectionApi = {
+    enterSelectionMode: () => void
+    exitSelectionMode: () => void
+}
+
+type SessionListSelectionUi = {
+    selectionMode: boolean
+    selectedCount: number
+    hasSelection: boolean
+}
 
 function BackIcon(props: { className?: string }) {
     return (
@@ -94,6 +105,46 @@ function SettingsIcon(props: { className?: string }) {
     )
 }
 
+function SelectionIcon(props: { className?: string }) {
+    return (
+        <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="24"
+            height="24"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className={props.className}
+        >
+            <path d="M9 11l3 3L22 4" />
+            <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" />
+        </svg>
+    )
+}
+
+function XIcon(props: { className?: string }) {
+    return (
+        <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="24"
+            height="24"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className={props.className}
+        >
+            <line x1="18" y1="6" x2="6" y2="18" />
+            <line x1="6" y1="6" x2="18" y2="18" />
+        </svg>
+    )
+}
+
 function SessionsPage() {
     const { api } = useAppContext()
     const navigate = useNavigate()
@@ -101,6 +152,12 @@ function SessionsPage() {
     const matchRoute = useMatchRoute()
     const { t } = useTranslation()
     const { sessions, isLoading, error, refetch } = useSessions(api)
+    const sessionListSelectionApiRef = useRef<SessionListSelectionApi | null>(null)
+    const [selectionUi, setSelectionUi] = useState<SessionListSelectionUi>({
+        selectionMode: false,
+        selectedCount: 0,
+        hasSelection: false,
+    })
 
     const handleRefresh = useCallback(() => {
         void refetch()
@@ -116,16 +173,31 @@ function SessionsPage() {
             <div
                 className={`${isSessionsIndex ? 'flex' : 'hidden lg:flex'} w-full lg:w-[420px] xl:w-[480px] shrink-0 flex-col bg-[var(--app-bg)] lg:border-r lg:border-[var(--app-divider)]`}
             >
-                <div className="bg-[var(--app-bg)] pt-[env(safe-area-inset-top)]">
-                    <div className="mx-auto w-full max-w-content flex items-center justify-between px-3 py-2">
-                        <div className="text-xs text-[var(--app-hint)]">
-                            {t('sessions.count', { n: sessions.length, m: projectCount })}
-                        </div>
-                        <div className="flex items-center gap-2">
-                            <button
-                                type="button"
-                                onClick={() => navigate({ to: '/settings' })}
-                                className="p-1.5 rounded-full text-[var(--app-hint)] hover:text-[var(--app-fg)] hover:bg-[var(--app-subtle-bg)] transition-colors"
+	                <div className="bg-[var(--app-bg)] pt-[env(safe-area-inset-top)]">
+	                    <div className="mx-auto w-full max-w-content flex items-center justify-between px-3 py-2">
+	                        <div className="text-xs text-[var(--app-hint)]">
+	                            {t('sessions.count', { n: sessions.length, m: projectCount })}
+	                        </div>
+	                        <div className="flex items-center gap-2">
+	                            <button
+	                                type="button"
+	                                onClick={() => {
+	                                    if (selectionUi.selectionMode) {
+	                                        sessionListSelectionApiRef.current?.exitSelectionMode()
+	                                    } else {
+	                                        sessionListSelectionApiRef.current?.enterSelectionMode()
+	                                    }
+	                                }}
+	                                className="p-1.5 rounded-full text-[var(--app-link)] transition-colors hover:bg-[var(--app-subtle-bg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)]"
+	                                title={selectionUi.selectionMode ? t('session.selection.exitMode') : t('session.selection.enterMode')}
+	                                aria-label={selectionUi.selectionMode ? t('session.selection.exitModeAria') : t('session.selection.enterModeAria')}
+	                            >
+	                                {selectionUi.selectionMode ? <XIcon className="h-5 w-5" /> : <SelectionIcon className="h-5 w-5" />}
+	                            </button>
+	                            <button
+	                                type="button"
+	                                onClick={() => navigate({ to: '/settings' })}
+	                                className="p-1.5 rounded-full text-[var(--app-hint)] hover:text-[var(--app-fg)] hover:bg-[var(--app-subtle-bg)] transition-colors"
                                 title={t('settings.title')}
                             >
                                 <SettingsIcon className="h-5 w-5" />
@@ -148,21 +220,23 @@ function SessionsPage() {
                             <div className="text-sm text-red-600">{error}</div>
                         </div>
                     ) : null}
-                    <SessionList
-                        sessions={sessions}
-                        selectedSessionId={selectedSessionId}
-                        onSelect={(sessionId) => navigate({
-                            to: '/sessions/$sessionId',
-                            params: { sessionId },
-                        })}
-                        onNewSession={() => navigate({ to: '/sessions/new' })}
-                        onRefresh={handleRefresh}
-                        isLoading={isLoading}
-                        renderHeader={false}
-                        api={api}
-                    />
-                </div>
-            </div>
+	                    <SessionList
+	                        sessions={sessions}
+	                        selectedSessionId={selectedSessionId}
+	                        onSelect={(sessionId) => navigate({
+	                            to: '/sessions/$sessionId',
+	                            params: { sessionId },
+	                        })}
+	                        onNewSession={() => navigate({ to: '/sessions/new' })}
+	                        onRefresh={handleRefresh}
+	                        isLoading={isLoading}
+	                        renderHeader={false}
+	                        api={api}
+	                        selectionApiRef={sessionListSelectionApiRef}
+	                        onSelectionStateChange={setSelectionUi}
+	                    />
+	                </div>
+	            </div>
 
             <div className={`${isSessionsIndex ? 'hidden lg:flex' : 'flex'} min-w-0 flex-1 flex-col bg-[var(--app-bg)]`}>
                 <div className="flex-1 min-h-0">

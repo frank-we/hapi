@@ -110,7 +110,10 @@ function AppInner() {
         }
     }, [goBack, pathname])
     const queryClient = useQueryClient()
-    const sessionMatch = matchRoute({ to: '/sessions/$sessionId' })
+    // `SessionDetailRoute` has nested routes (`/terminal`, `/files`, etc).
+    // Use fuzzy matching so we keep the SSE subscription scoped to the active session
+    // even when the user is on a nested session page.
+    const sessionMatch = matchRoute({ to: '/sessions/$sessionId', fuzzy: true })
     const selectedSessionId = sessionMatch ? sessionMatch.sessionId : null
     const { isSyncing, startSync, endSync } = useSyncingState()
     const [sseDisconnected, setSseDisconnected] = useState(false)
